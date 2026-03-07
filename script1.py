@@ -1,29 +1,77 @@
 import asyncio
+import json
+import os
 import re
+
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
-# --- НАЛАШТУВАННЯ (ОБОВ'ЯЗКОВО ЗАПОВНИ) ---
-API_TOKEN = '8647337935:AAH6H4ox15OiQIuQoT5orL5yKrNL93C7XVw'  # Встав свій токен від @BotFather
-LINK_TO_BANK = 'https://send.monobank.ua/jar/3ZBbXCCrnf'  # Посилання на твою Банку
+load_dotenv()
 
-bot = Bot(token=API_TOKEN)
+API_TOKEN = os.getenv("API_TOKEN")
+LINK_TO_BANK = os.getenv("LINK_TO_BANK")
+
+if not API_TOKEN:
+    raise ValueError("Не знайдено API_TOKEN у .env")
+
+if not LINK_TO_BANK:
+    raise ValueError("Не знайдено LINK_TO_BANK у .env")
+
+USER_MODES_FILE = "user_modes.json"
+REPLY_MAP_FILE = "reply_map.json"    
+USERS_FILE = "users.json"
+
+bot = Bot(
+    token=API_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+)
 dp = Dispatcher()
 
-# Сховища (у пам'яті)
-user_modes = {}
-reply_map = {}
+def load_json(filename: str, default):
+    if not os.path.exists(filename):
+        return default
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if data is not None else default
+    except (json.JSONDecodeError, OSError):
+        return default
 
+def save_json(filename: str, data):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Функція перевірки мови (фільтр російських літер)
-def is_russian(text: str):
-    if not text: return False
-    return bool(re.search(r'[ыЫэЭъЪёЁ]', text))
+def ensure_user_exists(user_id: int):
+    users = load_json(USERS_FILE, {})
 
+    if not isinstance(users, dict):
+        users = {}
 
-# Головне меню з кнопками
+    user_id  = str(user_id)
+
+    if user_id not in users:
+        users[user_id] = {}
+        save_json(USERS_FILE, users)
+
+user_modes = load_json(USER_MODES_FILE, {})
+reply_map = load_json(REPLY_MAP_FILE, {})
+
+if not isinstance(user_modes, dict):
+    user_modes = {}
+
+if not isinstance(reply_map, dict):
+    reply_map = {}
+
+def is_russian(text: str) -> bool:
+    if not text:
+        return False
+    return bool(re.search(r"[ыЫэЭъЪёЁ]", text)) 
+
 def get_main_menu():
     builder = ReplyKeyboardBuilder()
     builder.row(types.KeyboardButton(text="🔗 Моє посилання"))
@@ -31,42 +79,90 @@ def get_main_menu():
     builder.row(types.KeyboardButton(text="❓ Як це працює"))
     return builder.as_markup(resize_keyboard=True)
 
-
-# --- ОБРОБКА КОМАНД ---
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
-    if command.args:  # Якщо перейшли за посиланням
-        user_modes[message.from_user.id] = command.args
-        await message.answer("🤫 Режим анонімки активовано! Напиши текст або надішли фото (тільки солов'їною 🇺🇦)")
+    user_id = str(message.from_user.id)
+
+    ensure_user_exists(message.from_user.id)
+
+    if command.args:
+        target_id = command.args.strip()
+
+        if not target_id.isdigit():
+            await message.answer("❌ Невірне посилання.")
+            return
+
+        if target_id == user_id:
+            await message.answer("❌ Не можна надіслати анонімку самому собі.")
+            return
+
+        user_modes[user_id] = target_id
+        save_json(USER_MODES_FILE, user_modes)
+
+        await message.answer(
+            "🤫 Режим анонімки активовано!\n"
+            "Напиши текст або надішли фото українською 🇺🇦"
+        )
     else:
-        await message.answer("Привіт! Тисни на кнопки нижче 👇", reply_markup=get_main_menu())
+        await message.answer(
+            "Привіт! Тисни на кнопки нижче 👇",
+            reply_markup=get_main_menu()
+        )
 
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
 
-@dp.message(F.text == "🔗 Моє посилання")
+    users = load_json(USERS_FILE, {})
+
+    if not isinstance(users, dict):
+        users = {}
+
+    users_count = len(users)
+
+    await message.answer(
+        f"📊 Статистика бота\n"
+        f"👥 Користувачів: {users_count}"
+    )
+
+@dp.message(F.text ==  "🔗 Моє посилання" )
 async def send_link(message: types.Message):
+    ensure_user_exists(message.from_user.id)
+
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-    await message.answer(f"Твоє особисте посилання для анонімних повідомлень:\n\n`{link}`", parse_mode="Markdown")
 
+    await message.answer(
+        f"Твоє особисте посилання для анонімних повідомлень:\n\n`{link}`",
+        reply_markup=get_main_menu()
+    )
 
 @dp.message(F.text == "☕️ Підтримати бота")
 async def donate_info(message: types.Message):
+    ensure_user_exists(message.from_user.id)
+    
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="Відкрити Банку 🏦", url=LINK_TO_BANK))
-    await message.answer("Дякуємо за підтримку проекту! 🙏", reply_markup=builder.as_markup())
 
+    await message.answer(
+         "Дякуємо за підтримку проєкту! 🙏",
+         reply_markup=builder.as_markup()
+    )
 
 @dp.message(F.text == "❓ Як це працює")
 async def help_info(message: types.Message):
+    ensure_user_exists(message.from_user.id)
+
     await message.answer(
-        "Люди пишуть тобі анонімно через твоє посилання. Ти отримуєш повідомлення від бота і можеш відповісти на нього (через Reply).")
-
-
-# --- INLINE РЕЖИМ (ЧЕРЕЗ СОБАЧКУ) ---
+        "Люди пишуть тобі анонімно через твоє посилання.\n"
+        "Ти отримуєш повідомлення від бота і можеш відповісти на нього через Reply."
+    )
 
 @dp.inline_query()
 async def inline_handler(inline_query: types.InlineQuery):
+    ensure_user_exists(inline_query.from_user.id)
+
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={inline_query.from_user.id}"
 
@@ -78,68 +174,85 @@ async def inline_handler(inline_query: types.InlineQuery):
             message_text=f"Напиши мені анонімно за цим посиланням: {link}"
         )
     )
+
     await inline_query.answer([item], cache_time=1)
-
-
-# --- ГОЛОВНИЙ ОБРОБНИК: ТЕКСТ ТА ФОТО ---
 
 @dp.message(F.text | F.photo)
 async def handle_anonymous_content(message: types.Message):
-    user_id = message.from_user.id
-    caption = message.caption if message.photo else message.text
+    ensure_user_exists(message.from_user.id)
 
-    # 1. Якщо це відповідь (Reply) на повідомлення аноніма
-    if message.reply_to_message and message.reply_to_message.message_id in reply_map:
-        if is_russian(caption):
-            await message.reply("Пишіть українською! 🇺🇦")
+    user_id = str(message.from_user.id)
+    text_content = message.caption if message.photo else message.text
+
+    if message.reply_to_message:
+        replied_message_id = str(message.reply_to_message.message_id)
+
+        if replied_message_id in reply_map:
+            if is_russian(text_content):
+                await message.reply("Пишіть українською! 🇺🇦")
+                return
+
+            target_to_reply = int(reply_map[replied_message_id])
+
+            try:
+                if message.photo:
+                    await bot.send_photo(
+                        chat_id=target_to_reply,
+                        photo=message.photo[-1].file_id,
+                        caption=f"👤 *Автор відповів фотографією*\n\n{message.caption or ''}"
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=target_to_reply,
+                        text=f"👤 *Автор відповів:*\n\n{message.text}"
+                    )
+
+                await message.reply("✅ Відповідь надіслана!")
+            except Exception:
+                await message.reply("❌ Не вдалося доставити відповідь.")
             return
 
-        target_to_reply = reply_map[message.reply_to_message.message_id]
-        try:
-            if message.photo:
-                await bot.send_photo(target_to_reply, message.photo[-1].file_id, caption="👤 Автор відповів фотографією")
-            else:
-                await bot.send_message(target_to_reply, f"👤 **Автор відповів:**\n\n{message.text}")
-            await message.reply("✅ Відповідь надіслана!")
-        except Exception:
-            await message.reply("❌ Не вдалося доставити.")
-        return
-
-    # 2. Якщо це нова анонімка комусь
     if user_id in user_modes:
-        if is_russian(caption):
-            await message.reply("Тільки солов'їною! 🇺🇦")
+        if is_russian(text_content):
+            await message.reply("Тільки солов’їною! 🇺🇦")
             return
 
-        target_id = user_modes[user_id]
+        target_id = int(user_modes[user_id])
+
         try:
-            header = "📩 **Нова анонімка:**"
+            header = "📩 *Нова анонімка:*"
+
             if message.photo:
                 sent_msg = await bot.send_photo(
-                    target_id,
-                    message.photo[-1].file_id,
-                    caption=f"{header}\n\n{message.caption or ''}\n\n_(Відповідай на це фото)_"
+                    chat_id=target_id,
+                    photo=message.photo[-1].file_id,
+                    caption=f"{header}\n\n{message.caption or ''}\n\n_Відповідай на це фото_"
                 )
             else:
                 sent_msg = await bot.send_message(
-                    target_id,
-                    f"{header}\n\n{message.text}\n\n_(Відповідай на це повідомлення)_"
+                    chat_id=target_id,
+                    text=f"{header}\n\n{message.text}\n\n_Відповідай на це повідомлення_"
                 )
 
-            reply_map[sent_msg.message_id] = user_id
-            await message.answer("✅ Надіслано!", reply_markup=get_main_menu())
-            del user_modes[user_id]
-        except Exception:
-            await message.answer("❌ Користувач заблокував бота.")
-    else:
-        if not message.reply_to_message:
-            await message.answer("Використовуй меню або посилання 👇", reply_markup=get_main_menu())
+            reply_map[str(sent_msg.message_id)] = user_id
+            save_json(REPLY_MAP_FILE, reply_map)
 
+            user_modes.pop(user_id, None)
+            save_json(USER_MODES_FILE, user_modes)
+
+            await message.answer("✅ Надіслано!", reply_markup=get_main_menu())
+
+        except Exception:
+            await message.answer("❌ Користувач заблокував бота або сталася помилка.")
+    else:
+        await message.answer(
+            "Використовуй меню або своє посилання 👇",
+            reply_markup=get_main_menu()
+        )
 
 async def main():
-    print("Бот запущений! Перевірте токен у коді.")
+    print("Бот запущений!")
     await dp.start_polling(bot)
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
