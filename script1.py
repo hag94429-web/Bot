@@ -1,19 +1,17 @@
 import asyncio
 import json
 import os
-import re 
+import re
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from aiogram import Bot,Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject
-from aiogram.types import(
-    InlineQueryResultArticle,
-    InputTextMessageContent,
-    LabeledPrice,
-)
+from aiogram.types import InlineQueryResultArticle, InputTextMessageContent, LabeledPrice
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
 load_dotenv()
@@ -23,9 +21,9 @@ LINK_TO_BANK = os.getenv("LINK_TO_BANK")
 OWNER_IDS_RAW = os.getenv("OWNER_IDS") or os.getenv("OWNER_ID", "")
 ANTI_SPAM_SECONDS = int(os.getenv("ANTI_SPAM_SECONDS", "30"))
 
-OWNER_IDS = [int(x) for x in OWNER_IDS_RAW.split(",") if x.sprit().isdigit()]
+OWNER_IDS = [int(x) for x in OWNER_IDS_RAW.split(",") if x.strip().isdigit()]
 
-USER_FILE = "user.json"
+USERS_FILE = "users.json"
 USER_MODES_FILE = "user_modes.json"
 REPLY_MAP_FILE = "reply_map.json"
 PAYMENTS_FILE = "payments.json"
@@ -39,9 +37,15 @@ bot = Bot(
 
 dp = Dispatcher()
 
+users = {}
+user_modes = {}
+reply_map = {}
+
 UKRAINE_TZ = ZoneInfo("Europe/Kyiv")
 
 last_send = {}
+
+# ---------- JSON ----------
 
 def load_json(file, default):
     if not os.path.exists(file):
@@ -52,26 +56,33 @@ def load_json(file, default):
     except:
         return default
 
+
 def save_json(file, data):
     with open(file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-users = load_json(USER_FILE, {})
+
+users = load_json(USERS_FILE, {})
 user_modes = load_json(USER_MODES_FILE, {})
 reply_map = load_json(REPLY_MAP_FILE, {})
+
+# ---------- UTILS ----------
 
 def ensure_user(uid):
     if str(uid) not in users:
         users[str(uid)] = {}
-        save_json(USER_FILE, users)
+        save_json(USERS_FILE, users)
+
 
 def is_owner(uid):
     return uid in OWNER_IDS
+
 
 def is_russian(text):
     if not text:
         return False
     return bool(re.search(r"[ыЫэЭъЪёЁ]", text))
+
 
 def anti_spam(uid):
     now = time.time()
@@ -82,6 +93,9 @@ def anti_spam(uid):
 
     last_send[uid] = now
     return True
+
+
+# ---------- UI ----------
 
 def main_menu():
 
@@ -94,30 +108,34 @@ def main_menu():
 
     return kb.as_markup(resize_keyboard=True)
 
+
 def stars_menu():
 
-    kd = InlineKeyboardBuilder()
+    kb = InlineKeyboardBuilder()
 
     for s in STAR_PACKS:
-        kd.row(
+        kb.row(
             types.InlineKeyboardButton(
                 text=f"⭐ {s}",
                 callback_data=f"stars:{s}"
             )
         )
-    
-    return kd.as_markup()
+
+    return kb.as_markup()
+
+
+# ---------- START ----------
 
 @dp.message(Command("start"))
-async def start(message: types.Message, commamd, CommandObject):
+async def start(message: types.Message, command: CommandObject):
 
     ensure_user(message.from_user.id)
 
     if command.args:
 
-        targets = commamd.args.split(",")
+        targets = command.args.split(",")
 
-        user_modes[str(message.from_user.id)] = targers
+        user_modes[str(message.from_user.id)] = targets
         save_json(USER_MODES_FILE, user_modes)
 
         await message.answer(
@@ -132,7 +150,10 @@ async def start(message: types.Message, commamd, CommandObject):
             reply_markup=main_menu()
         )
 
-@dp.message(F.text == "🔗 Моє посилання" )
+
+# ---------- LINK ----------
+
+@dp.message(F.text == "🔗 Моє посилання")
 async def my_link(message: types.Message):
 
     bot_info = await bot.get_me()
@@ -142,17 +163,22 @@ async def my_link(message: types.Message):
     await message.answer(
         f"Твоє посилання:\n\n`{link}`",
         reply_markup=main_menu()
-    ) 
- 
+    )
+
+
+# ---------- HELP ----------
 
 @dp.message(F.text == "❓ Як це працює")
 async def help_cmd(message: types.Message):
-    
+
     await message.answer(
-         "Люди пишуть тобі анонімно через посилання."
+        "Люди пишуть тобі анонімно через посилання."
     )
 
-@db.message(F.text == "☕ Підтримати бота" )
+
+# ---------- DONATE MONO ----------
+
+@dp.message(F.text == "☕ Підтримати бота")
 async def donate(message: types.Message):
 
     kb = InlineKeyboardBuilder()
@@ -169,13 +195,18 @@ async def donate(message: types.Message):
         reply_markup=kb.as_markup()
     )
 
-@dp.message(F.text == "⭐ Підтримати в зірках" )
+
+# ---------- STARS ----------
+
+@dp.message(F.text == "⭐ Підтримати в зірках")
 async def stars(message: types.Message):
 
     await message.answer(
-         "Обери суму ⭐",
-         reply_markup=stars_menu()
+        "Обери суму ⭐",
+        reply_markup=stars_menu()
     )
+
+
 @dp.callback_query(F.data.startswith("stars"))
 async def stars_pay(callback: types.CallbackQuery):
 
@@ -185,17 +216,18 @@ async def stars_pay(callback: types.CallbackQuery):
         chat_id=callback.from_user.id,
         title="Підтримка бота",
         description="Дякуємо за донат ⭐",
-        payload=f"stats_{amount}",
+        payload=f"stars_{amount}",
         currency="XTR",
         prices=[LabeledPrice(label="Stars", amount=amount)]
     )
 
+
 @dp.pre_checkout_query()
 async def checkout(pre_checkout_query: types.PreCheckoutQuery):
-    await bot.answer_web_app_query(pre_checkout_query.id, ok=True)
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 
-@dp.message(F.seccessful_payment)
+@dp.message(F.successful_payment)
 async def payment_success(message: types.Message):
 
     payments = load_json(PAYMENTS_FILE, [])
@@ -203,12 +235,15 @@ async def payment_success(message: types.Message):
     payments.append({
         "user": message.from_user.id,
         "amount": message.successful_payment.total_amount,
-        "date": datetime.now(UKRAINE_TZ).strftime("%Y-%m-%d %H:%M:%S") 
+        "date": datetime.now(UKRAINE_TZ).strftime("%Y-%m-%d %H:%M:%S")
     })
 
     save_json(PAYMENTS_FILE, payments)
 
     await message.answer("⭐ Дякуємо за підтримку!")
+
+
+# ---------- STATS ----------
 
 @dp.message(Command("stats"))
 async def stats(message: types.Message):
@@ -224,7 +259,10 @@ async def stats(message: types.Message):
         f"📊 Статистика\n\n"
         f"👥 Користувачів: {len(users)}\n"
         f"⭐ Донатів: {stars}"
-    ) 
+    )
+
+
+# ---------- PAYMENTS ----------
 
 @dp.message(Command("payments"))
 async def payments(message: types.Message):
@@ -245,13 +283,16 @@ async def payments(message: types.Message):
 
     await message.answer(text)
 
+
+# ---------- BROADCAST ----------
+
 @dp.message(Command("broadcast"))
-async def broadcast(message: types.Message, commamd: CommandObject):
+async def broadcast(message: types.Message, command: CommandObject):
 
     if not is_owner(message.from_user.id):
         return
 
-    text = commamd.args
+    text = command.args
 
     if not text:
         await message.answer("Напиши текст")
@@ -274,6 +315,9 @@ async def broadcast(message: types.Message, commamd: CommandObject):
         f"BAD: {bad}"
     )
 
+
+# ---------- ANON ----------
+
 @dp.message(
     F.text | F.photo | F.voice | F.video_note | F.animation | F.sticker
 )
@@ -288,7 +332,7 @@ async def anon(message: types.Message):
         mid = str(message.reply_to_message.message_id)
 
         if mid in reply_map:
-            
+
             target = reply_map[mid]
 
             await bot.copy_message(
@@ -301,39 +345,42 @@ async def anon(message: types.Message):
 
             return
 
-        if uid not in user_modes:
-            return
+    if uid not in user_modes:
+        return
 
-        if not anti_spam(message.from_user.id):
-            await message.reply("Зачекай трохи")
-            return
+    if not anti_spam(message.from_user.id):
+        await message.reply("Зачекай трохи")
+        return
 
-        targets = user_modes[uid]
+    targets = user_modes[uid]
 
-        for t in targets:
+    for t in targets:
 
-            try:
+        try:
 
-                sent = await bol.copy_message(
-                    chat_id=int(t),
-                    from_chat_id=message.chat.id,
-                    message_id=message.message_id
-                )
-
-                reply_map[srt(sent.message_id)] = uid
-
-            except:
-                pass
-
-            save_json(REPLY_MAP_FILE, reply_map)
-
-            user_modes.pop(uid)
-            save_json(USER_MODES_FILE, user_modes)  
-
-            await message.answer(
-                "Надіслано",
-                reply_markup=main_menu()
+            sent = await bot.copy_message(
+                chat_id=int(t),
+                from_chat_id=message.chat.id,
+                message_id=message.message_id
             )
+
+            reply_map[str(sent.message_id)] = uid
+
+        except:
+            pass
+
+    save_json(REPLY_MAP_FILE, reply_map)
+
+    user_modes.pop(uid)
+    save_json(USER_MODES_FILE, user_modes)
+
+    await message.answer(
+        "Надіслано",
+        reply_markup=main_menu()
+    )
+
+
+# ---------- INLINE ----------
 
 @dp.inline_query()
 async def inline(query: types.InlineQuery):
@@ -350,8 +397,10 @@ async def inline(query: types.InlineQuery):
         )
     )
 
-    await query.answer([item], cache_time=1)            
+    await query.answer([item], cache_time=1)
 
+
+# ---------- MAIN ----------
 
 async def main():
 
