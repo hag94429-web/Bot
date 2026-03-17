@@ -12,12 +12,12 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandObject
-from aiogram.filters.command import CommandStart
+from aiogram.filters import Command
+from aiogram.filters.command import CommandObject, CommandStart
 from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent,
-    LabeledPrice
+    LabeledPrice,
 )
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
@@ -34,7 +34,7 @@ if not API_TOKEN:
 if not LINK_TO_BANK:
     raise ValueError("Не знайдено LINK_TO_BANK у .env")
 
-OWNER_IDS = [int(x) for x in OWNER_IDS_RAW.split(",") if x.strip().isdigit()]
+OWNER_IDS = [int(x.strip()) for x in OWNER_IDS_RAW.split(",") if x.strip().isdigit()]
 if not OWNER_IDS:
     raise ValueError("Не знайдено OWNER_IDS або OWNER_ID у .env")
 
@@ -43,8 +43,19 @@ USER_MODES_FILE = "user_modes.json"
 REPLY_MAP_FILE = "reply_map.json"
 PAYMENTS_FILE = "payments.json"
 TEAMS_FILE = "teams.json"
+COUNTERS_FILE = "counters.json"
+REACTIONS_FILE = "reactions.json"
 
 STAR_PACKS = [50, 100, 250, 500]
+REACTION_EMOJIS = ["❤️", "🔥", "😂", "😮", "😡"]
+QUESTIONS = [
+    "Хто тобі подобається?",
+    "Що ти про мене думаєш?",
+    "Хто тебе бісить?",
+    "З ким хочеш спілкуватись?",
+    "Яка твоя думка про мене?",
+    "Напиши мені щось приємне 🙂",
+]
 
 bot = Bot(
     token=API_TOKEN,
@@ -55,23 +66,28 @@ dp = Dispatcher()
 UKRAINE_TZ = ZoneInfo("Europe/Kyiv")
 last_send = {}
 
-def load_json(file, default):
-    if not os.path.exists(file):
+def load_json(file_path, default):
+    if not os.path.exists(file_path):
         return default
     try:
-        with open(file, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if data is not None else default
     except Exception:
         return default
 
-def save_json(file, data):
-    with open(file, "w", encoding="utf-8") as f:
+
+def save_json(file_path, data):
+    with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 users = load_json(USERS_FILE, {})
 user_modes = load_json(USER_MODES_FILE, {})
 reply_map = load_json(REPLY_MAP_FILE, {})
 teams = load_json(TEAMS_FILE, {})
+counters = load_json(COUNTERS_FILE, {})
+reactions = load_json(REACTIONS_FILE, {})
 
 if not isinstance(users, dict):
     users = {}
@@ -85,11 +101,22 @@ if not isinstance(reply_map, dict):
 if not isinstance(teams, dict):
     teams = {}
 
+if not isinstance(counters, dict):
+    counters = {}
+
+if not isinstance(reactions, dict):
+    reactions = {}
+
 def ensure_user(uid: int):
     uid_str = str(uid)
+
     if uid_str not in users:
         users[uid_str] = {}
         save_json(USERS_FILE, users)
+
+    if uid_str not in counters:
+        counters[uid_str] = {"received": 0}
+        save_json(COUNTERS_FILE, counters)
 
 def is_owner(uid: int) -> bool:
     return uid in OWNER_IDS
@@ -121,10 +148,13 @@ def normalize_targets(raw_targets):
 
     for item in raw_targets:
         item = str(item).strip()
+
         if not item.isdigit():
             continue
+
         if item in seen:
             continue
+
         seen.add(item)
         result.append(item)
 
@@ -144,11 +174,13 @@ def parse_targets(arg: str, current_user_id: int):
     targets = [t for t in targets if t != current_user_id]
     return targets
 
+
 def payment_total_stars():
     payments = load_json(PAYMENTS_FILE, [])
     if not isinstance(payments, list):
         return 0
     return sum(p.get("amount", 0) for p in payments if isinstance(p, dict))
+
 
 def generate_team_key():
     while True:
@@ -157,13 +189,83 @@ def generate_team_key():
         if key not in teams:
             return key
 
+
+def get_received_count(uid: int) -> int:
+    uid_str = str(uid)
+    if uid_str not in counters:
+        counters[uid_str] = {"received": 0}
+        save_json(COUNTERS_FILE, counters)
+    return counters[uid_str].get("received", 0)
+
+
+def increment_received_count(uid: int) -> int:
+    uid_str = str(uid)
+    if uid_str not in counters:
+        counters[uid_str] = {"received": 0}
+    counters[uid_str]["received"] = counters[uid_str].get("received", 0) + 1
+    save_json(COUNTERS_FILE, counters)
+    return counters[uid_str]["received"]
+
+
+def reaction_key(chat_id: int, message_id: int) -> str:
+    return f"{chat_id}:{message_id}"
+
+
+def reaction_keyboard(chat_id: int, message_id: int):
+    key = reaction_key(chat_id, message_id)
+    data = reactions.get(key, {})
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text=f"❤️ {data.get('❤️', 0)}",
+            callback_data=f"react:{chat_id}:{message_id}:❤️",
+        ),
+        types.InlineKeyboardButton(
+            text=f"🔥 {data.get('🔥', 0)}",
+            callback_data=f"react:{chat_id}:{message_id}:🔥",
+        ),
+        types.InlineKeyboardButton(
+            text=f"😂 {data.get('😂', 0)}",
+            callback_data=f"react:{chat_id}:{message_id}:😂",
+        ),
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            text=f"😮 {data.get('😮', 0)}",
+            callback_data=f"react:{chat_id}:{message_id}:😮",
+        ),
+        types.InlineKeyboardButton(
+            text=f"😡 {data.get('😡', 0)}",
+            callback_data=f"react:{chat_id}:{message_id}:😡",
+        ),
+    )
+    return kb.as_markup()
+
+
+def clean_bad_users(bad_ids):
+    removed = 0
+
+    for uid in bad_ids:
+        uid = str(uid)
+        if uid in users:
+            users.pop(uid, None)
+            removed += 1
+
+    if removed > 0:
+        save_json(USERS_FILE, users)
+
+    return removed
+
 def main_menu():
     kb = ReplyKeyboardBuilder()
     kb.row(types.KeyboardButton(text="🔗 Моє посилання"))
+    kb.row(types.KeyboardButton(text="📢 Поділитися"))
     kb.row(types.KeyboardButton(text="⭐ Підтримати в зірках"))
     kb.row(types.KeyboardButton(text="☕ Підтримати бота"))
     kb.row(types.KeyboardButton(text="❓ Як це працює"))
     return kb.as_markup(resize_keyboard=True)
+
 
 def stars_menu():
     kb = InlineKeyboardBuilder()
@@ -201,10 +303,28 @@ async def start(message: types.Message, command: CommandObject):
                 "Напиши текст, надішли фото, голосове, кружок, GIF або стікер."
             )
     else:
-        await message.answer(
-            "Привіт 👋",
-            reply_markup=main_menu()
+        await message.answer("Привіт 👋", reply_markup=main_menu())
+
+@dp.message(Command("question"))
+async def question_cmd(message: types.Message):
+    ensure_user(message.from_user.id)
+
+    q = random.choice(QUESTIONS)
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text="📩 Відповісти анонімно",
+            url=link
         )
+    )
+
+    await message.answer(
+        f"❓ *Питання дня:*\n\n{q}",
+        reply_markup=kb.as_markup()
+    )
 
 @dp.message(Command("createteam"))
 async def create_team(message: types.Message, command: CommandObject):
@@ -241,7 +361,20 @@ async def create_team(message: types.Message, command: CommandObject):
         f"👥 Учасників: {len(targets)}\n"
         f"🔗 Спільна силка:\n`{link}`"
     )
-    
+
+@dp.message(Command("teams"))
+async def teams_list(message: types.Message):
+    if not teams:
+        await message.answer("📂 Team поки немає.")
+        return
+
+    lines = ["👥 *Список team:*\n"]
+    for key, members in teams.items():
+        count = len(members) if isinstance(members, list) else 0
+        lines.append(f"`{key}` — {count} учасників")
+
+    await message.answer("\n".join(lines))
+
 @dp.message(Command("teamlink"))
 async def team_link(message: types.Message, command: CommandObject):
     key = (command.args or "").strip()
@@ -257,12 +390,12 @@ async def team_link(message: types.Message, command: CommandObject):
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={key}"
 
-    await message.answer(
-        f"🔗 Силка для `{key}`:\n`{link}`"
-    )
+    await message.answer(f"🔗 Силка для `{key}`:\n`{link}`")
 
 @dp.message(F.text == "🔗 Моє посилання")
 async def my_link(message: types.Message):
+    ensure_user(message.from_user.id)
+
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
 
@@ -271,12 +404,25 @@ async def my_link(message: types.Message):
         reply_markup=main_menu()
     )
 
+@dp.message(F.text == "📢 Поділитися")
+async def share_bot(message: types.Message):
+    ensure_user(message.from_user.id)
+
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+
+    await message.answer(
+        f"📢 Поділись своїм посиланням:\n\n`{link}`\n\n"
+        "Скинь друзям, щоб вони писали тобі анонімно 😏",
+        reply_markup=main_menu()
+    )
+
 @dp.message(F.text == "❓ Як це працює")
 async def help_cmd(message: types.Message):
     await message.answer(
         "Люди пишуть тобі анонімно через посилання.\n"
         "Підтримуються текст, фото, голосові, кружки, GIF і стікери.\n"
-        "Також можна робити спільні силки через teams.json або /createteam."
+        "Є team-силки, реакції, лічильник анонімок і питання дня."
     )
 
 @dp.message(F.text == "☕ Підтримати бота")
@@ -289,17 +435,11 @@ async def donate(message: types.Message):
         )
     )
 
-    await message.answer(
-        "Дякуємо ❤️",
-        reply_markup=kb.as_markup()
-    )
+    await message.answer("Дякуємо ❤️", reply_markup=kb.as_markup())
 
 @dp.message(F.text == "⭐ Підтримати в зірках")
 async def stars(message: types.Message):
-    await message.answer(
-        "Обери суму ⭐",
-        reply_markup=stars_menu()
-    )
+    await message.answer("Обери суму ⭐", reply_markup=stars_menu())
 
 @dp.callback_query(F.data.startswith("stars:"))
 async def stars_pay(callback: types.CallbackQuery):
@@ -345,7 +485,6 @@ async def payment_success(message: types.Message):
     })
 
     save_json(PAYMENTS_FILE, payments)
-
     await message.answer("⭐ Дякуємо за підтримку!")
 
 @dp.message(Command("stats"))
@@ -392,30 +531,67 @@ async def broadcast(message: types.Message, command: CommandObject):
         return
 
     text = (command.args or "").strip()
-
     if not text:
         await message.answer("Напиши текст")
         return
 
     ok = 0
     bad = 0
+    bad_ids = []
 
-    for uid in users:
+    for uid in list(users.keys()):
         try:
             await bot.send_message(int(uid), text)
             ok += 1
         except Exception:
             bad += 1
+            bad_ids.append(uid)
+
+    removed = clean_bad_users(bad_ids)
 
     await message.answer(
         f"Розсилка завершена\n\n"
         f"OK: {ok}\n"
-        f"BAD: {bad}"
+        f"BAD: {bad}\n"
+        f"🧹 Видалено з бази: {removed}"
     )
 
 @dp.message(F.forward_origin)
 async def block_forwarded(message: types.Message):
     await message.answer("❌ Переслані повідомлення не підтримуються.")
+
+@dp.callback_query(F.data.startswith("react:"))
+async def react_to_message(callback: types.CallbackQuery):
+    try:
+        _, chat_id, message_id, emoji = callback.data.split(":", 3)
+        chat_id = int(chat_id)
+        message_id = int(message_id)
+    except Exception:
+        await callback.answer("❌ Помилка реакції", show_alert=True)
+        return
+
+    if emoji not in REACTION_EMOJIS:
+        await callback.answer("❌ Невірна реакція", show_alert=True)
+        return
+
+    key = reaction_key(chat_id, message_id)
+
+    if key not in reactions:
+        reactions[key] = {}
+
+    reactions[key][emoji] = reactions[key].get(emoji, 0) + 1
+    save_json(REACTIONS_FILE, reactions)
+
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=reaction_keyboard(chat_id, message_id)
+        )
+    except Exception:
+        pass
+
+    await callback.answer("Реакцію додано")
 
 @dp.message(F.text | F.photo | F.voice | F.video_note | F.animation | F.sticker)
 async def anon(message: types.Message):
@@ -465,13 +641,49 @@ async def anon(message: types.Message):
 
     for t in targets:
         try:
-            sent = await bot.copy_message(
-                chat_id=int(t),
-                from_chat_id=message.chat.id,
-                message_id=message.message_id
-            )
+            number = increment_received_count(int(t))
+            prefix = f"📩 Нова анонімка #{number}"
 
-            reply_map[str(sent.message_id)] = uid
+            if message.text:
+                sent = await bot.send_message(
+                    chat_id=int(t),
+                    text=f"{prefix}\n\n{message.text}"
+                )
+                reply_map[str(sent.message_id)] = uid
+
+                try:
+                    await bot.edit_message_reply_markup(
+                        chat_id=int(t),
+                        message_id=sent.message_id,
+                        reply_markup=reaction_keyboard(int(t), sent.message_id)
+                    )
+                except Exception:
+                    pass
+
+            else:
+                header = await bot.send_message(
+                    chat_id=int(t),
+                    text=prefix
+                )
+
+                sent = await bot.copy_message(
+                    chat_id=int(t),
+                    from_chat_id=message.chat.id,
+                    message_id=message.message_id
+                )
+
+                reply_map[str(header.message_id)] = uid
+                reply_map[str(sent.message_id)] = uid
+
+                try:
+                    await bot.edit_message_reply_markup(
+                        chat_id=int(t),
+                        message_id=sent.message_id,
+                        reply_markup=reaction_keyboard(int(t), sent.message_id)
+                    )
+                except Exception:
+                    pass
+
             ok += 1
         except Exception:
             bad += 1
@@ -517,3 +729,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
