@@ -194,7 +194,6 @@ def get_reply_target(message_id: int) -> int | None:
     cur.execute("SELECT target_user_id FROM reply_map WHERE message_id = ?", (message_id,))
     row = cur.fetchone()
     conn.close()
-
     return int(row["target_user_id"]) if row else None
 
 

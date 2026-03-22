@@ -315,21 +315,26 @@ async def top_cmd(message: types.Message):
     rows = get_top_users(10)
 
     if not rows:
-        await message.answer("Поки немає даних 😢")
+        await message.answer("😢 Поки немає топу", parse_mode=None)
         return
 
-    text = "🏆 *Топ користувачів за кількістю анонімок:*\n\n"
-
+    text = "🏆 Топ користувачів:\n\n"
     medals = ["🥇", "🥈", "🥉"]
 
     for i, user in enumerate(rows, start=1):
         first_name = user["first_name"] or "Без імені"
-        username = f" (@{user['username']})" if user["username"] else ""
+        username = user["username"] or ""
+        count = user["received_count"]
+
+        if username:
+            name = f"{first_name} (@{username})"
+        else:
+            name = first_name
+
         mark = medals[i - 1] if i <= 3 else f"{i}."
+        text += f"{mark} {name} — {count} 📩\n"
 
-        text += f"{mark} {first_name}{username} — {user['received_count']} 📩\n"
-
-    await message.answer(text)
+    await message.answer(text, parse_mode=None)
 
 
 @dp.message(F.text == "🔗 Моє посилання")
