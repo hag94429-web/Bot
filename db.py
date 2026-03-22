@@ -5,10 +5,12 @@ from zoneinfo import ZoneInfo
 DB_PATH = "bot.db"
 UKRAINE_TZ = ZoneInfo("Europe/Kyiv")
 
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     conn = get_conn()
@@ -69,13 +71,16 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def serialize_targets(targets: list[str]) -> str:
     return ",".join(str(x) for x in targets)
+
 
 def deserialize_targets(raw: str) -> list[str]:
     if not raw:
         return []
     return [x.strip() for x in raw.split(",") if x.strip()]
+
 
 def ensure_user(user_id: int, username: str | None = None, first_name: str | None = None):
     conn = get_conn()
@@ -105,6 +110,7 @@ def ensure_user(user_id: int, username: str | None = None, first_name: str | Non
     conn.commit()
     conn.close()
 
+
 def get_users_count() -> int:
     conn = get_conn()
     cur = conn.cursor()
@@ -113,6 +119,7 @@ def get_users_count() -> int:
     conn.close()
     return int(row["cnt"])
 
+
 def get_all_user_ids() -> list[int]:
     conn = get_conn()
     cur = conn.cursor()
@@ -120,6 +127,7 @@ def get_all_user_ids() -> list[int]:
     rows = cur.fetchall()
     conn.close()
     return [int(row["user_id"]) for row in rows]
+
 
 def delete_users(user_ids: list[int]) -> int:
     if not user_ids:
@@ -137,6 +145,7 @@ def delete_users(user_ids: list[int]) -> int:
     conn.close()
     return removed
 
+
 def set_user_mode(sender_id: int, targets: list[str]):
     conn = get_conn()
     cur = conn.cursor()
@@ -146,6 +155,7 @@ def set_user_mode(sender_id: int, targets: list[str]):
     """, (sender_id, serialize_targets(targets)))
     conn.commit()
     conn.close()
+
 
 def get_user_mode(sender_id: int) -> list[str]:
     conn = get_conn()
@@ -158,12 +168,14 @@ def get_user_mode(sender_id: int) -> list[str]:
         return []
     return deserialize_targets(row["targets"])
 
+
 def delete_user_mode(sender_id: int):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("DELETE FROM user_modes WHERE sender_id = ?", (sender_id,))
     conn.commit()
     conn.close()
+
 
 def set_reply_target(message_id: int, target_user_id: int):
     conn = get_conn()
@@ -175,6 +187,7 @@ def set_reply_target(message_id: int, target_user_id: int):
     conn.commit()
     conn.close()
 
+
 def get_reply_target(message_id: int) -> int | None:
     conn = get_conn()
     cur = conn.cursor()
@@ -183,6 +196,7 @@ def get_reply_target(message_id: int) -> int | None:
     conn.close()
 
     return int(row["target_user_id"]) if row else None
+
 
 def create_team(team_key: str, targets: list[str], created_by: int | None = None):
     conn = get_conn()
@@ -199,6 +213,7 @@ def create_team(team_key: str, targets: list[str], created_by: int | None = None
     conn.commit()
     conn.close()
 
+
 def team_exists(team_key: str) -> bool:
     conn = get_conn()
     cur = conn.cursor()
@@ -206,6 +221,7 @@ def team_exists(team_key: str) -> bool:
     row = cur.fetchone()
     conn.close()
     return row is not None
+
 
 def get_team_targets(team_key: str) -> list[str]:
     conn = get_conn()
@@ -217,6 +233,7 @@ def get_team_targets(team_key: str) -> list[str]:
     if not row:
         return []
     return deserialize_targets(row["targets"])
+
 
 def get_all_teams():
     conn = get_conn()
@@ -230,6 +247,7 @@ def get_all_teams():
     conn.close()
     return rows
 
+
 def get_teams_count() -> int:
     conn = get_conn()
     cur = conn.cursor()
@@ -237,6 +255,7 @@ def get_teams_count() -> int:
     row = cur.fetchone()
     conn.close()
     return int(row["cnt"])
+
 
 def add_payment(
     user_id: int,
@@ -264,6 +283,7 @@ def add_payment(
     conn.commit()
     conn.close()
 
+
 def get_last_payments(limit: int = 10):
     conn = get_conn()
     cur = conn.cursor()
@@ -277,6 +297,7 @@ def get_last_payments(limit: int = 10):
     conn.close()
     return rows
 
+
 def get_total_stars() -> int:
     conn = get_conn()
     cur = conn.cursor()
@@ -284,6 +305,7 @@ def get_total_stars() -> int:
     row = cur.fetchone()
     conn.close()
     return int(row["total"]) if row else 0
+
 
 def increment_received_count(user_id: int) -> int:
     conn = get_conn()
@@ -307,6 +329,7 @@ def increment_received_count(user_id: int) -> int:
     conn.close()
     return int(row["received_count"])
 
+
 def get_received_count(user_id: int) -> int:
     conn = get_conn()
     cur = conn.cursor()
@@ -314,3 +337,20 @@ def get_received_count(user_id: int) -> int:
     row = cur.fetchone()
     conn.close()
     return int(row["received_count"]) if row else 0
+
+
+def get_top_users(limit: int = 10):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT u.user_id, u.username, u.first_name, c.received_count
+        FROM counters c
+        JOIN users u ON u.user_id = c.user_id
+        ORDER BY c.received_count DESC, u.joined_at ASC
+        LIMIT ?
+    """, (limit,))
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows

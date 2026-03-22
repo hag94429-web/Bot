@@ -38,6 +38,7 @@ from db import (
     get_last_payments,
     get_total_stars,
     increment_received_count,
+    get_top_users,
 )
 
 load_dotenv()
@@ -75,13 +76,16 @@ dp = Dispatcher()
 
 last_send = {}
 
+
 def is_owner(uid: int) -> bool:
     return uid in OWNER_IDS
+
 
 def is_russian(text: str) -> bool:
     if not text:
         return False
     return bool(re.search(r"[ыЫэЭъЪёЁ]", text))
+
 
 def anti_spam(uid: int) -> bool:
     now = time.time()
@@ -93,11 +97,13 @@ def anti_spam(uid: int) -> bool:
     last_send[uid] = now
     return True
 
+
 def get_wait_seconds(uid: int) -> int:
     now = time.time()
     last = last_send.get(uid, 0)
     left = int(ANTI_SPAM_SECONDS - (now - last))
     return max(left, 1)
+
 
 def normalize_targets(raw_targets):
     result = []
@@ -117,6 +123,7 @@ def normalize_targets(raw_targets):
 
     return result
 
+
 def parse_targets(arg: str, current_user_id: int):
     arg = (arg or "").strip()
     current_user_id = str(current_user_id)
@@ -130,6 +137,7 @@ def parse_targets(arg: str, current_user_id: int):
     targets = [t for t in targets if t != current_user_id]
     return targets
 
+
 def generate_team_key():
     while True:
         suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -137,9 +145,11 @@ def generate_team_key():
         if not team_exists(key):
             return key
 
+
 def clean_bad_users(bad_ids):
     bad_ids = [int(x) for x in bad_ids if str(x).isdigit()]
     return delete_users(bad_ids)
+
 
 def main_menu():
     kb = ReplyKeyboardBuilder()
@@ -149,6 +159,7 @@ def main_menu():
     kb.row(types.KeyboardButton(text="☕ Підтримати бота"))
     kb.row(types.KeyboardButton(text="❓ Як це працює"))
     return kb.as_markup(resize_keyboard=True)
+
 
 def stars_menu():
     kb = InlineKeyboardBuilder()
@@ -160,6 +171,7 @@ def stars_menu():
             )
         )
     return kb.as_markup()
+
 
 @dp.message(CommandStart())
 async def start(message: types.Message, command: CommandObject):
@@ -191,6 +203,7 @@ async def start(message: types.Message, command: CommandObject):
     else:
         await message.answer("Привіт 👋", reply_markup=main_menu())
 
+
 @dp.message(Command("question"))
 async def question_cmd(message: types.Message):
     ensure_user(
@@ -215,6 +228,7 @@ async def question_cmd(message: types.Message):
         f"❓ *Питання дня:*\n\n{q}",
         reply_markup=kb.as_markup()
     )
+
 
 @dp.message(Command("createteam"))
 async def create_team_handler(message: types.Message, command: CommandObject):
@@ -255,6 +269,7 @@ async def create_team_handler(message: types.Message, command: CommandObject):
         f"🔗 Спільна силка:\n`{link}`"
     )
 
+
 @dp.message(Command("teams"))
 async def teams_list(message: types.Message):
     rows = get_all_teams()
@@ -269,6 +284,7 @@ async def teams_list(message: types.Message):
         lines.append(f"`{row['team_key']}` — {len(members)} учасників")
 
     await message.answer("\n".join(lines))
+
 
 @dp.message(Command("teamlink"))
 async def team_link(message: types.Message, command: CommandObject):
@@ -287,6 +303,35 @@ async def team_link(message: types.Message, command: CommandObject):
 
     await message.answer(f"🔗 Силка для `{key}`:\n`{link}`")
 
+
+@dp.message(Command("top"))
+async def top_cmd(message: types.Message):
+    ensure_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+
+    rows = get_top_users(10)
+
+    if not rows:
+        await message.answer("Поки немає даних 😢")
+        return
+
+    text = "🏆 *Топ користувачів за кількістю анонімок:*\n\n"
+
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, user in enumerate(rows, start=1):
+        first_name = user["first_name"] or "Без імені"
+        username = f" (@{user['username']})" if user["username"] else ""
+        mark = medals[i - 1] if i <= 3 else f"{i}."
+
+        text += f"{mark} {first_name}{username} — {user['received_count']} 📩\n"
+
+    await message.answer(text)
+
+
 @dp.message(F.text == "🔗 Моє посилання")
 async def my_link(message: types.Message):
     ensure_user(
@@ -302,6 +347,7 @@ async def my_link(message: types.Message):
         f"Твоє посилання:\n\n`{link}`",
         reply_markup=main_menu()
     )
+
 
 @dp.message(F.text == "📢 Поділитися")
 async def share_bot(message: types.Message):
@@ -320,6 +366,7 @@ async def share_bot(message: types.Message):
         reply_markup=main_menu()
     )
 
+
 @dp.message(F.text == "❓ Як це працює")
 async def help_cmd(message: types.Message):
     await message.answer(
@@ -327,6 +374,7 @@ async def help_cmd(message: types.Message):
         "Підтримуються текст, фото, голосові, кружки, GIF і стікери.\n"
         "Є team-силки, лічильник анонімок і питання дня."
     )
+
 
 @dp.message(F.text == "☕ Підтримати бота")
 async def donate(message: types.Message):
@@ -340,9 +388,11 @@ async def donate(message: types.Message):
 
     await message.answer("Дякуємо ❤️", reply_markup=kb.as_markup())
 
+
 @dp.message(F.text == "⭐ Підтримати в зірках")
 async def stars(message: types.Message):
     await message.answer("Обери суму ⭐", reply_markup=stars_menu())
+
 
 @dp.callback_query(F.data.startswith("stars:"))
 async def stars_pay(callback: types.CallbackQuery):
@@ -367,9 +417,11 @@ async def stars_pay(callback: types.CallbackQuery):
         prices=[LabeledPrice(label="Stars", amount=amount)]
     )
 
+
 @dp.pre_checkout_query()
 async def checkout(pre_checkout_query: types.PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
 
 @dp.message(F.successful_payment)
 async def payment_success(message: types.Message):
@@ -383,6 +435,7 @@ async def payment_success(message: types.Message):
     )
     await message.answer("⭐ Дякуємо за підтримку!")
 
+
 @dp.message(Command("stats"))
 async def stats(message: types.Message):
     if not is_owner(message.from_user.id):
@@ -394,6 +447,7 @@ async def stats(message: types.Message):
         f"⭐ Донатів: {get_total_stars()}\n"
         f"👥 Team: {get_teams_count()}"
     )
+
 
 @dp.message(Command("payments"))
 async def payments_cmd(message: types.Message):
@@ -414,6 +468,7 @@ async def payments_cmd(message: types.Message):
         text += f"⭐ {p['amount']} — {p['paid_at']}\n{first_name} ({username_text})\n\n"
 
     await message.answer(text)
+
 
 @dp.message(Command("broadcast"))
 async def broadcast(message: types.Message, command: CommandObject):
@@ -448,9 +503,11 @@ async def broadcast(message: types.Message, command: CommandObject):
         f"🧹 Видалено з бази: {removed}"
     )
 
+
 @dp.message(F.forward_origin)
 async def block_forwarded(message: types.Message):
     await message.answer("❌ Переслані повідомлення не підтримуються.")
+
 
 @dp.message(F.text | F.photo | F.voice | F.video_note | F.animation | F.sticker)
 async def anon(message: types.Message):
@@ -545,6 +602,7 @@ async def anon(message: types.Message):
             reply_markup=main_menu()
         )
 
+
 @dp.inline_query()
 async def inline(query: types.InlineQuery):
     ensure_user(
@@ -566,10 +624,12 @@ async def inline(query: types.InlineQuery):
 
     await query.answer([item], cache_time=1)
 
+
 async def main():
     init_db()
     print("Bot started")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
