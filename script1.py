@@ -39,6 +39,11 @@ from db import (
     get_total_stars,
     increment_received_count,
     get_top_users,
+    # для банів
+    ban_user,
+    unban_user,
+    is_banned,
+    init_bans,
 )
 
 load_dotenv()
@@ -73,30 +78,23 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
 )
 dp = Dispatcher()
-
 last_send = {}
-
 
 def is_owner(uid: int) -> bool:
     return uid in OWNER_IDS
-
 
 def is_russian(text: str) -> bool:
     if not text:
         return False
     return bool(re.search(r"[ыЫэЭъЪёЁ]", text))
 
-
 def anti_spam(uid: int) -> bool:
     now = time.time()
     last = last_send.get(uid, 0)
-
     if now - last < ANTI_SPAM_SECONDS:
         return False
-
     last_send[uid] = now
     return True
-
 
 def get_wait_seconds(uid: int) -> int:
     now = time.time()
@@ -104,39 +102,29 @@ def get_wait_seconds(uid: int) -> int:
     left = int(ANTI_SPAM_SECONDS - (now - last))
     return max(left, 1)
 
-
 def normalize_targets(raw_targets):
     result = []
     seen = set()
-
     for item in raw_targets:
         item = str(item).strip()
-
         if not item.isdigit():
             continue
-
         if item in seen:
             continue
-
         seen.add(item)
         result.append(item)
-
     return result
-
 
 def parse_targets(arg: str, current_user_id: int):
     arg = (arg or "").strip()
     current_user_id = str(current_user_id)
-
     if team_exists(arg):
         targets = normalize_targets(get_team_targets(arg))
     else:
         raw_targets = re.split(r"[,\s]+", arg)
         targets = normalize_targets(raw_targets)
-
     targets = [t for t in targets if t != current_user_id]
     return targets
-
 
 def generate_team_key():
     while True:
@@ -145,11 +133,9 @@ def generate_team_key():
         if not team_exists(key):
             return key
 
-
 def clean_bad_users(bad_ids):
     bad_ids = [int(x) for x in bad_ids if str(x).isdigit()]
     return delete_users(bad_ids)
-
 
 def main_menu():
     kb = ReplyKeyboardBuilder()
@@ -159,7 +145,6 @@ def main_menu():
     kb.row(types.KeyboardButton(text="☕ Підтримати бота"))
     kb.row(types.KeyboardButton(text="❓ Як це працює"))
     return kb.as_markup(resize_keyboard=True)
-
 
 def stars_menu():
     kb = InlineKeyboardBuilder()
@@ -172,9 +157,13 @@ def stars_menu():
         )
     return kb.as_markup()
 
-
+# --- Команди старту ---
 @dp.message(CommandStart())
 async def start(message: types.Message, command: CommandObject):
+    if is_banned(message.from_user.id):
+        await message.answer("❌ Ти заблокований")
+        return
+
     ensure_user(
         message.from_user.id,
         message.from_user.username,
@@ -183,13 +172,10 @@ async def start(message: types.Message, command: CommandObject):
 
     if command.args:
         targets = parse_targets(command.args, message.from_user.id)
-
         if not targets:
             await message.answer("❌ Невірне посилання або немає коректних ID.")
             return
-
         set_user_mode(message.from_user.id, targets)
-
         if len(targets) == 1:
             await message.answer(
                 "🤫 Режим анонімки активовано!\n"
@@ -203,174 +189,144 @@ async def start(message: types.Message, command: CommandObject):
     else:
         await message.answer("Привіт 👋", reply_markup=main_menu())
 
-
+# --- Питання ---
 @dp.message(Command("question"))
 async def question_cmd(message: types.Message):
+    if is_banned(message.from_user.id):
+        await message.answer("❌ Ти заблокований")
+        return
     ensure_user(
         message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
-
     q = random.choice(QUESTIONS)
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-
     kb = InlineKeyboardBuilder()
-    kb.row(
-        types.InlineKeyboardButton(
-            text="📩 Відповісти анонімно",
-            url=link
-        )
-    )
+    kb.row(types.InlineKeyboardButton(text="📩 Відповісти анонімно", url=link))
+    await message.answer(f"❓ *Питання дня:*\n\n{q}", reply_markup=kb.as_markup())
 
-    await message.answer(
-        f"❓ *Питання дня:*\n\n{q}",
-        reply_markup=kb.as_markup()
-    )
-
-
+# --- Створення команди ---
 @dp.message(Command("createteam"))
 async def create_team_handler(message: types.Message, command: CommandObject):
+    if is_banned(message.from_user.id):
+        await message.answer("❌ Ти заблокований")
+        return
     ensure_user(
         message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
-
     raw_args = (command.args or "").strip()
     if not raw_args:
         await message.answer(
-            "❌ Використання:\n`/createteam 123456789 987654321`\n\n"
+            "❌ Використання:\n`/createteam 123456789 987654321`\n"
             "Або через кому:\n`/createteam 123456789,987654321`"
         )
         return
-
     raw_targets = re.split(r"[,\s]+", raw_args)
     targets = normalize_targets(raw_targets)
-
     creator_id = str(message.from_user.id)
     if creator_id not in targets:
         targets.insert(0, creator_id)
-
     if len(targets) < 2:
         await message.answer("❌ Потрібно мінімум 2 ID для team.")
         return
-
     team_key = generate_team_key()
     create_team(team_key, targets, message.from_user.id)
-
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={team_key}"
-
     await message.answer(
         f"✅ Team створено: `{team_key}`\n\n"
         f"👥 Учасників: {len(targets)}\n"
         f"🔗 Спільна силка:\n`{link}`"
     )
 
-
+# --- Список команд ---
 @dp.message(Command("teams"))
 async def teams_list(message: types.Message):
     rows = get_all_teams()
-
     if not rows:
         await message.answer("📂 Team поки немає.")
         return
-
     lines = ["👥 *Список team:*\n"]
     for row in rows:
         members = get_team_targets(row["team_key"])
         lines.append(f"`{row['team_key']}` — {len(members)} учасників")
-
     await message.answer("\n".join(lines))
-
 
 @dp.message(Command("teamlink"))
 async def team_link(message: types.Message, command: CommandObject):
     key = (command.args or "").strip()
-
     if not key:
         await message.answer("❌ Використання: `/teamlink team_xxxxxx`")
         return
-
     if not team_exists(key):
         await message.answer("❌ Такої team немає.")
         return
-
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={key}"
-
     await message.answer(f"🔗 Силка для `{key}`:\n`{link}`")
 
-
+# --- Топ ---
 @dp.message(Command("top"))
 async def top_cmd(message: types.Message):
+    if is_banned(message.from_user.id):
+        await message.answer("❌ Ти заблокований")
+        return
     ensure_user(
         message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
-
     rows = get_top_users(10)
-
     if not rows:
         await message.answer("😢 Поки немає топу", parse_mode=None)
         return
-
     text = "🏆 Топ користувачів:\n\n"
     medals = ["🥇", "🥈", "🥉"]
-
     for i, user in enumerate(rows, start=1):
         first_name = user["first_name"] or "Без імені"
         username = user["username"] or ""
         count = user["received_count"]
-
-        if username:
-            name = f"{first_name} (@{username})"
-        else:
-            name = first_name
-
+        name = f"{first_name} (@{username})" if username else first_name
         mark = medals[i - 1] if i <= 3 else f"{i}."
         text += f"{mark} {name} — {count} 📩\n"
-
     await message.answer(text, parse_mode=None)
 
-
+# --- Основне меню ---
 @dp.message(F.text == "🔗 Моє посилання")
 async def my_link(message: types.Message):
+    if is_banned(message.from_user.id):
+        await message.answer("❌ Ти заблокований")
+        return
     ensure_user(
         message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
-
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-
-    await message.answer(
-        f"Твоє посилання:\n\n`{link}`",
-        reply_markup=main_menu()
-    )
-
+    await message.answer(f"Твоє посилання:\n\n`{link}`", reply_markup=main_menu())
 
 @dp.message(F.text == "📢 Поділитися")
 async def share_bot(message: types.Message):
+    if is_banned(message.from_user.id):
+        await message.answer("❌ Ти заблокований")
+        return
     ensure_user(
         message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
-
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-
     await message.answer(
         f"📢 Поділись своїм посиланням:\n\n`{link}`\n\n"
         "Скинь друзям, щоб вони писали тобі анонімно 😏",
         reply_markup=main_menu()
     )
-
 
 @dp.message(F.text == "❓ Як це працює")
 async def help_cmd(message: types.Message):
@@ -380,24 +336,15 @@ async def help_cmd(message: types.Message):
         "Є team-силки, лічильник анонімок і питання дня."
     )
 
-
 @dp.message(F.text == "☕ Підтримати бота")
 async def donate(message: types.Message):
     kb = InlineKeyboardBuilder()
-    kb.row(
-        types.InlineKeyboardButton(
-            text="Відкрити банку",
-            url=LINK_TO_BANK
-        )
-    )
-
+    kb.row(types.InlineKeyboardButton(text="Відкрити банку", url=LINK_TO_BANK))
     await message.answer("Дякуємо ❤️", reply_markup=kb.as_markup())
-
 
 @dp.message(F.text == "⭐ Підтримати в зірках")
 async def stars(message: types.Message):
     await message.answer("Обери суму ⭐", reply_markup=stars_menu())
-
 
 @dp.callback_query(F.data.startswith("stars:"))
 async def stars_pay(callback: types.CallbackQuery):
@@ -406,13 +353,10 @@ async def stars_pay(callback: types.CallbackQuery):
     except Exception:
         await callback.answer("❌ Помилка суми", show_alert=True)
         return
-
     if amount not in STAR_PACKS:
         await callback.answer("❌ Невірна сума", show_alert=True)
         return
-
     await callback.answer()
-
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title="Підтримка бота",
@@ -422,11 +366,9 @@ async def stars_pay(callback: types.CallbackQuery):
         prices=[LabeledPrice(label="Stars", amount=amount)]
     )
 
-
 @dp.pre_checkout_query()
 async def checkout(pre_checkout_query: types.PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
 
 @dp.message(F.successful_payment)
 async def payment_success(message: types.Message):
@@ -440,12 +382,11 @@ async def payment_success(message: types.Message):
     )
     await message.answer("⭐ Дякуємо за підтримку!")
 
-
+# --- Статистика та донати ---
 @dp.message(Command("stats"))
 async def stats(message: types.Message):
     if not is_owner(message.from_user.id):
         return
-
     await message.answer(
         f"📊 Статистика\n\n"
         f"👥 Користувачів: {get_users_count()}\n"
@@ -453,44 +394,34 @@ async def stats(message: types.Message):
         f"👥 Team: {get_teams_count()}"
     )
 
-
 @dp.message(Command("payments"))
 async def payments_cmd(message: types.Message):
     if not is_owner(message.from_user.id):
         return
-
     rows = get_last_payments(10)
-
     if not rows:
         await message.answer("Донатів немає")
         return
-
     text = "💸 Останні донати\n\n"
-
     for p in rows:
         username_text = f"@{p['username']}" if p["username"] else "без username"
         first_name = p["first_name"] or "Без імені"
         text += f"⭐ {p['amount']} — {p['paid_at']}\n{first_name} ({username_text})\n\n"
-
     await message.answer(text)
 
-
+# --- Розсилка ---
 @dp.message(Command("broadcast"))
 async def broadcast(message: types.Message, command: CommandObject):
     if not is_owner(message.from_user.id):
         return
-
     text = (command.args or "").strip()
     if not text:
         await message.answer("Напиши текст")
         return
-
     user_ids = get_all_user_ids()
-
     ok = 0
     bad = 0
     bad_ids = []
-
     for uid in user_ids:
         try:
             await bot.send_message(uid, text)
@@ -498,53 +429,38 @@ async def broadcast(message: types.Message, command: CommandObject):
         except Exception:
             bad += 1
             bad_ids.append(uid)
-
     removed = clean_bad_users(bad_ids)
+    await message.answer(f"Розсилка завершена\n\nOK: {ok}\nBAD: {bad}\n🧹 Видалено з бази: {removed}")
 
-    await message.answer(
-        f"Розсилка завершена\n\n"
-        f"OK: {ok}\n"
-        f"BAD: {bad}\n"
-        f"🧹 Видалено з бази: {removed}"
-    )
-
-
+# --- Заборона форвардів ---
 @dp.message(F.forward_origin)
 async def block_forwarded(message: types.Message):
     await message.answer("❌ Переслані повідомлення не підтримуються.")
 
-
+# --- Анонімні повідомлення ---
 @dp.message(F.text | F.photo | F.voice | F.video_note | F.animation | F.sticker)
 async def anon(message: types.Message):
-    ensure_user(
-        message.from_user.id,
-        message.from_user.username,
-        message.from_user.first_name
-    )
+    if is_banned(message.from_user.id):
+        await message.answer("❌ Ти заблокований і не можеш надсилати анонімки")
+        return
 
+    ensure_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     uid = message.from_user.id
     text_content = message.text or message.caption
 
     if message.reply_to_message:
         mid = message.reply_to_message.message_id
         target = get_reply_target(mid)
-
         if target is not None:
             if is_russian(text_content):
                 await message.reply("Пишіть українською! 🇺🇦")
                 return
-
             try:
-                sent = await bot.copy_message(
-                    chat_id=target,
-                    from_chat_id=message.chat.id,
-                    message_id=message.message_id
-                )
+                sent = await bot.copy_message(chat_id=target, from_chat_id=message.chat.id, message_id=message.message_id)
                 set_reply_target(sent.message_id, uid)
                 await message.reply("Відправлено")
             except Exception:
                 await message.reply("❌ Помилка відправки")
-
             return
 
     targets = get_user_mode(uid)
@@ -561,80 +477,64 @@ async def anon(message: types.Message):
 
     ok = 0
     bad = 0
-
     for t in targets:
         try:
             number = increment_received_count(int(t))
             prefix = f"📩 Нова анонімка #{number}"
-
             if message.text:
-                sent = await bot.send_message(
-                    chat_id=int(t),
-                    text=f"{prefix}\n\n{message.text}"
-                )
-                set_reply_target(sent.message_id, uid)
-            else:
-                header = await bot.send_message(
-                    chat_id=int(t),
-                    text=prefix
-                )
-
-                sent = await bot.copy_message(
-                    chat_id=int(t),
-                    from_chat_id=message.chat.id,
-                    message_id=message.message_id
-                )
-
-                set_reply_target(header.message_id, uid)
-                set_reply_target(sent.message_id, uid)
-
+                sent = await bot
+                sent = await bot.send_message(chat_id=int(t), text=f"{prefix}\n\n{message.text}")
+            elif message.photo:
+                sent = await bot.send_photo(chat_id=int(t), photo=message.photo[-1].file_id, caption=prefix)
+            elif message.voice:
+                sent = await bot.send_voice(chat_id=int(t), voice=message.voice.file_id, caption=prefix)
+            elif message.video_note:
+                sent = await bot.send_video_note(chat_id=int(t), video_note=message.video_note.file_id)
+            elif message.animation:
+                sent = await bot.send_animation(chat_id=int(t), animation=message.animation.file_id, caption=prefix)
+            elif message.sticker:
+                sent = await bot.send_sticker(chat_id=int(t), sticker=message.sticker.file_id)
+            set_reply_target(sent.message_id, uid)
             ok += 1
         except Exception:
             bad += 1
+    await message.reply(f"✅ Відправлено: {ok}\n❌ Не вдалося: {bad}")
 
-    delete_user_mode(uid)
+# --- Бан користувачів ---
+@dp.message(Command("ban"))
+async def ban_cmd(message: types.Message, command: CommandObject):
+    if not is_owner(message.from_user.id):
+        return
+    args = (command.args or "").strip().split()
+    if not args:
+        await message.reply("Вкажи ID користувача для бану")
+        return
+    for uid_str in args:
+        if uid_str.isdigit():
+            uid = int(uid_str)
+            ban_user(uid)
+    await message.reply(f"✅ Заблоковано: {', '.join(args)}")
 
-    if ok > 0 and bad == 0:
-        await message.answer("Надіслано", reply_markup=main_menu())
-    elif ok > 0 and bad > 0:
-        await message.answer(
-            f"Надіслано: {ok}\nНе вдалося: {bad}",
-            reply_markup=main_menu()
-        )
-    else:
-        await message.answer(
-            "❌ Не вдалося надіслати повідомлення",
-            reply_markup=main_menu()
-        )
+@dp.message(Command("unban"))
+async def unban_cmd(message: types.Message, command: CommandObject):
+    if not is_owner(message.from_user.id):
+        return
+    args = (command.args or "").strip().split()
+    if not args:
+        await message.reply("Вкажи ID користувача для розбану")
+        return
+    for uid_str in args:
+        if uid_str.isdigit():
+            uid = int(uid_str)
+            unban_user(uid)
+    await message.reply(f"✅ Розблоковано: {', '.join(args)}")
 
-
-@dp.inline_query()
-async def inline(query: types.InlineQuery):
-    ensure_user(
-        query.from_user.id,
-        query.from_user.username,
-        query.from_user.first_name
-    )
-
-    bot_info = await bot.get_me()
-    link = f"https://t.me/{bot_info.username}?start={query.from_user.id}"
-
-    item = InlineQueryResultArticle(
-        id="share",
-        title="Анонімне посилання",
-        input_message_content=InputTextMessageContent(
-            message_text=f"Напиши мені анонімно\n{link}"
-        )
-    )
-
-    await query.answer([item], cache_time=1)
-
-
+# --- Ініціалізація ---
 async def main():
-    init_db()
-    print("Bot started")
+    await init_db()
+    await init_bans()
+    print("Бот запущено ✅")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())

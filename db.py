@@ -71,6 +71,10 @@ def init_db():
     conn.commit()
     conn.close()
 
+    init_bans()  # 👈 БАНИ
+
+
+# --- SERIALIZE ---
 
 def serialize_targets(targets: list[str]) -> str:
     return ",".join(str(x) for x in targets)
@@ -82,7 +86,9 @@ def deserialize_targets(raw: str) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-def ensure_user(user_id: int, username: str | None = None, first_name: str | None = None):
+# --- USERS ---
+
+def ensure_user(user_id: int, username=None, first_name=None):
     conn = get_conn()
     cur = conn.cursor()
 
@@ -146,6 +152,8 @@ def delete_users(user_ids: list[int]) -> int:
     return removed
 
 
+# --- USER MODES ---
+
 def set_user_mode(sender_id: int, targets: list[str]):
     conn = get_conn()
     cur = conn.cursor()
@@ -177,6 +185,8 @@ def delete_user_mode(sender_id: int):
     conn.close()
 
 
+# --- REPLY MAP ---
+
 def set_reply_target(message_id: int, target_user_id: int):
     conn = get_conn()
     cur = conn.cursor()
@@ -197,7 +207,9 @@ def get_reply_target(message_id: int) -> int | None:
     return int(row["target_user_id"]) if row else None
 
 
-def create_team(team_key: str, targets: list[str], created_by: int | None = None):
+# --- TEAMS ---
+
+def create_team(team_key: str, targets: list[str], created_by=None):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -234,38 +246,12 @@ def get_team_targets(team_key: str) -> list[str]:
     return deserialize_targets(row["targets"])
 
 
-def get_all_teams():
+# --- PAYMENTS ---
+
+def add_payment(user_id, username, first_name, amount, currency, payload):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT team_key, targets, created_by, created_at
-        FROM teams
-        ORDER BY created_at DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
-
-def get_teams_count() -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) AS cnt FROM teams")
-    row = cur.fetchone()
-    conn.close()
-    return int(row["cnt"])
-
-
-def add_payment(
-    user_id: int,
-    username: str | None,
-    first_name: str | None,
-    amount: int,
-    currency: str,
-    payload: str | None
-):
-    conn = get_conn()
-    cur = conn.cursor()
     cur.execute("""
         INSERT INTO payments (
             user_id, username, first_name, amount, currency, payload, paid_at
@@ -279,47 +265,19 @@ def add_payment(
         payload,
         datetime.now(UKRAINE_TZ).strftime("%Y-%m-%d %H:%M:%S")
     ))
+
     conn.commit()
     conn.close()
 
 
-def get_last_payments(limit: int = 10):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, username, first_name, amount, currency, payload, paid_at
-        FROM payments
-        ORDER BY id DESC
-        LIMIT ?
-    """, (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_total_stars() -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COALESCE(SUM(amount), 0) AS total FROM payments")
-    row = cur.fetchone()
-    conn.close()
-    return int(row["total"]) if row else 0
-
+# --- COUNTERS ---
 
 def increment_received_count(user_id: int) -> int:
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-        INSERT OR IGNORE INTO counters (user_id, received_count)
-        VALUES (?, 0)
-    """, (user_id,))
-
-    cur.execute("""
-        UPDATE counters
-        SET received_count = received_count + 1
-        WHERE user_id = ?
-    """, (user_id,))
+    cur.execute("INSERT OR IGNORE INTO counters (user_id, received_count) VALUES (?, 0)", (user_id,))
+    cur.execute("UPDATE counters SET received_count = received_count + 1 WHERE user_id = ?", (user_id,))
 
     cur.execute("SELECT received_count FROM counters WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
@@ -329,27 +287,55 @@ def increment_received_count(user_id: int) -> int:
     return int(row["received_count"])
 
 
-def get_received_count(user_id: int) -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT received_count FROM counters WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return int(row["received_count"]) if row else 0
+# --- BANS SYSTEM ---
 
-
-def get_top_users(limit: int = 10):
+def init_bans():
     conn = get_conn()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT u.user_id, u.username, u.first_name, c.received_count
-        FROM counters c
-        JOIN users u ON u.user_id = c.user_id
-        ORDER BY c.received_count DESC, u.joined_at ASC
-        LIMIT ?
-    """, (limit,))
+        CREATE TABLE IF NOT EXISTS bans (
+            user_id INTEGER PRIMARY KEY,
+            banned_at TEXT
+        )
+    """)
 
-    rows = cur.fetchall()
+    conn.commit()
     conn.close()
-    return rows
+
+
+def ban_user(user_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT OR REPLACE INTO bans (user_id, banned_at)
+        VALUES (?, ?)
+    """, (
+        user_id,
+        datetime.now(UKRAINE_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def unban_user(user_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def is_banned(user_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM bans WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+
+    conn.close()
+    return row is not None
