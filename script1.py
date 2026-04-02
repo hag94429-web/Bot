@@ -38,7 +38,10 @@ from db import (
     get_last_payments,
     get_total_stars,
     increment_received_count,
-    get_top_users,
+    ban_user,
+    unban_user,
+    is_user_banned,
+    get_banned_users,
 )
 
 load_dotenv()
@@ -75,19 +78,17 @@ bot = Bot(
 dp = Dispatcher()
 
 last_send = {}
-banned_users = set()  # тут зберігатимемо забанених користувачів у пам’яті
 
-
-# ================== ФУНКЦІЇ ==================
 def is_owner(uid: int) -> bool:
     return uid in OWNER_IDS
 
+def check_ban(uid: int) -> bool:
+    return is_user_banned(uid)
 
 def is_russian(text: str) -> bool:
     if not text:
         return False
     return bool(re.search(r"[ыЫэЭъЪёЁ]", text))
-
 
 def anti_spam(uid: int) -> bool:
     now = time.time()
@@ -99,13 +100,11 @@ def anti_spam(uid: int) -> bool:
     last_send[uid] = now
     return True
 
-
 def get_wait_seconds(uid: int) -> int:
     now = time.time()
     last = last_send.get(uid, 0)
     left = int(ANTI_SPAM_SECONDS - (now - last))
     return max(left, 1)
-
 
 def normalize_targets(raw_targets):
     result = []
@@ -125,7 +124,6 @@ def normalize_targets(raw_targets):
 
     return result
 
-
 def parse_targets(arg: str, current_user_id: int):
     arg = (arg or "").strip()
     current_user_id = str(current_user_id)
@@ -139,7 +137,6 @@ def parse_targets(arg: str, current_user_id: int):
     targets = [t for t in targets if t != current_user_id]
     return targets
 
-
 def generate_team_key():
     while True:
         suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -147,11 +144,9 @@ def generate_team_key():
         if not team_exists(key):
             return key
 
-
 def clean_bad_users(bad_ids):
     bad_ids = [int(x) for x in bad_ids if str(x).isdigit()]
     return delete_users(bad_ids)
-
 
 def main_menu():
     kb = ReplyKeyboardBuilder()
@@ -161,7 +156,6 @@ def main_menu():
     kb.row(types.KeyboardButton(text="☕ Підтримати бота"))
     kb.row(types.KeyboardButton(text="❓ Як це працює"))
     return kb.as_markup(resize_keyboard=True)
-
 
 def stars_menu():
     kb = InlineKeyboardBuilder()
@@ -174,27 +168,10 @@ def stars_menu():
         )
     return kb.as_markup()
 
-
-def ban_user(uid: int):
-    banned_users.add(uid)
-    delete_user_mode(uid)  # видаляємо режим анонімки якщо є
-    return True
-
-
-def unban_user(uid: int):
-    banned_users.discard(uid)
-    return True
-
-
-def is_banned(uid: int):
-    return uid in banned_users
-
-
-# ================== КОМАНДИ ==================
 @dp.message(CommandStart())
 async def start(message: types.Message, command: CommandObject):
-    if is_banned(message.from_user.id):
-        await message.answer("❌ Ти забанений і не можеш користуватись ботом.")
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
         return
 
     ensure_user(
@@ -225,67 +202,442 @@ async def start(message: types.Message, command: CommandObject):
     else:
         await message.answer("Привіт 👋", reply_markup=main_menu())
 
-
-@dp.message(Command("ban"))
-async def cmd_ban(message: types.Message, command: CommandObject):
-    if not is_owner(message.from_user.id):
-        await message.answer("❌ Тільки власник може банити користувачів")
-        return
-
-    raw_ids = (command.args or "").strip()
-    if not raw_ids:
-        await message.answer("❌ Вкажи ID користувачів через пробіл або кому")
-        return
-
-    user_ids = [x.strip() for x in re.split(r"[,\s]+", raw_ids) if x.strip().isdigit()]
-    if not user_ids:
-        await message.answer("❌ Немає правильних ID")
-        return
-
-    for uid in user_ids:
-        ban_user(int(uid))
-
-    await message.answer(f"✅ Заблоковано {len(user_ids)} користувачів:\n" + ", ".join(user_ids))
-
-
-@dp.message(Command("unban"))
-async def cmd_unban(message: types.Message, command: CommandObject):
-    if not is_owner(message.from_user.id):
-        await message.answer("❌ Тільки власник може розбанювати користувачів")
-        return
-
-    raw_ids = (command.args or "").strip()
-    if not raw_ids:
-        await message.answer("❌ Вкажи ID користувачів через пробіл або кому")
-        return
-
-    user_ids = [x.strip() for x in re.split(r"[,\s]+", raw_ids) if x.strip().isdigit()]
-    if not user_ids:
-        await message.answer("❌ Немає правильних ID")
-        return
-
-    for uid in user_ids:
-        unban_user(int(uid))
-
-    await message.answer(f"✅ Розблоковано {len(user_ids)} користувачів:\n" + ", ".join(user_ids))
-
-
-# ================== АНІМОВАНІ ПОВІДОМЛЕННЯ ==================
-@dp.message(F.text | F.photo | F.voice | F.video_note | F.animation | F.sticker)
-async def anon(message: types.Message):
-    uid = message.from_user.id
-
-    if is_banned(uid):
-        await message.answer("❌ Ти забанений і не можеш користуватись ботом.")
+@dp.message(Command("question"))
+async def question_cmd(message: types.Message):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
         return
 
     ensure_user(
-        uid,
+        message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
 
+    q = random.choice(QUESTIONS)
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text="📩 Відповісти анонімно",
+            url=link
+        )
+    )
+
+    await message.answer(
+        f"❓ *Питання дня:*\n\n{q}",
+        reply_markup=kb.as_markup()
+    )
+
+@dp.message(Command("createteam"))
+async def create_team_handler(message: types.Message, command: CommandObject):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
+    ensure_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+
+    raw_args = (command.args or "").strip()
+    if not raw_args:
+        await message.answer(
+            "❌ Використання:\n`/createteam 123456789 987654321`\n\n"
+            "Або через кому:\n`/createteam 123456789,987654321`"
+        )
+        return
+
+    raw_targets = re.split(r"[,\s]+", raw_args)
+    targets = normalize_targets(raw_targets)
+
+    creator_id = str(message.from_user.id)
+    if creator_id not in targets:
+        targets.insert(0, creator_id)
+
+    if len(targets) < 2:
+        await message.answer("❌ Потрібно мінімум 2 ID для team.")
+        return
+
+    team_key = generate_team_key()
+    create_team(team_key, targets, message.from_user.id)
+
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={team_key}"
+
+    await message.answer(
+        f"✅ Team створено: `{team_key}`\n\n"
+        f"👥 Учасників: {len(targets)}\n"
+        f"🔗 Спільна силка:\n`{link}`"
+    )
+
+@dp.message(Command("teams"))
+async def teams_list(message: types.Message):
+    rows = get_all_teams()
+
+    if not rows:
+        await message.answer("📂 Team поки немає.")
+        return
+
+    lines = ["👥 *Список team:*\n"]
+    for row in rows:
+        members = get_team_targets(row["team_key"])
+        lines.append(f"`{row['team_key']}` — {len(members)} учасників")
+
+    await message.answer("\n".join(lines))
+
+@dp.message(Command("teamlink"))
+async def team_link(message: types.Message, command: CommandObject):
+    key = (command.args or "").strip()
+
+    if not key:
+        await message.answer("❌ Використання: `/teamlink team_xxxxxx`")
+        return
+
+    if not team_exists(key):
+        await message.answer("❌ Такої team немає.")
+        return
+
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={key}"
+
+    await message.answer(f"🔗 Силка для `{key}`:\n`{link}`")
+
+@dp.message(F.text == "🔗 Моє посилання")
+async def my_link(message: types.Message):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
+    ensure_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+
+    await message.answer(
+        f"Твоє посилання:\n\n`{link}`",
+        reply_markup=main_menu()
+    )
+
+@dp.message(F.text == "📢 Поділитися")
+async def share_bot(message: types.Message):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
+    ensure_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+
+    await message.answer(
+        f"📢 Поділись своїм посиланням:\n\n`{link}`\n\n"
+        "Скинь друзям, щоб вони писали тобі анонімно 😏",
+        reply_markup=main_menu()
+    )
+
+@dp.message(F.text == "❓ Як це працює")
+async def help_cmd(message: types.Message):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
+    await message.answer(
+        "Люди пишуть тобі анонімно через посилання.\n"
+        "Підтримуються текст, фото, голосові, кружки, GIF і стікери.\n"
+        "Є team-силки, лічильник анонімок і питання дня."
+    )
+
+@dp.message(F.text == "☕ Підтримати бота")
+async def donate(message: types.Message):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(
+            text="Відкрити банку",
+            url=LINK_TO_BANK
+        )
+    )
+
+    await message.answer("Дякуємо ❤️", reply_markup=kb.as_markup())
+
+@dp.message(F.text == "⭐ Підтримати в зірках")
+async def stars(message: types.Message):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
+    await message.answer("Обери суму ⭐", reply_markup=stars_menu())
+
+@dp.callback_query(F.data.startswith("stars:"))
+async def stars_pay(callback: types.CallbackQuery):
+    if check_ban(callback.from_user.id):
+        await callback.answer("🚫 Вас заблоковано.", show_alert=True)
+        return
+
+    try:
+        amount = int(callback.data.split(":")[1])
+    except Exception:
+        await callback.answer("❌ Помилка суми", show_alert=True)
+        return
+
+    if amount not in STAR_PACKS:
+        await callback.answer("❌ Невірна сума", show_alert=True)
+        return
+
+    await callback.answer()
+
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Підтримка бота",
+        description="Дякуємо за донат ⭐",
+        payload=f"stars_{amount}",
+        currency="XTR",
+        prices=[LabeledPrice(label="Stars", amount=amount)]
+    )
+
+@dp.pre_checkout_query()
+async def checkout(pre_checkout_query: types.PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def payment_success(message: types.Message):
+    add_payment(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+        amount=message.successful_payment.total_amount,
+        currency=message.successful_payment.currency,
+        payload=message.successful_payment.invoice_payload
+    )
+    await message.answer("⭐ Дякуємо за підтримку!")
+
+@dp.message(Command("stats"))
+async def stats(message: types.Message):
+    if not is_owner(message.from_user.id):
+        return
+
+    await message.answer(
+        f"📊 Статистика\n\n"
+        f"👥 Користувачів: {get_users_count()}\n"
+        f"⭐ Донатів: {get_total_stars()}\n"
+        f"👥 Team: {get_teams_count()}"
+    )
+
+@dp.message(Command("payments"))
+async def payments_cmd(message: types.Message):
+    if not is_owner(message.from_user.id):
+        return
+
+    rows = get_last_payments(10)
+
+    if not rows:
+        await message.answer("Донатів немає")
+        return
+
+    text = "💸 Останні донати\n\n"
+
+    for p in rows:
+        username_text = f"@{p['username']}" if p["username"] else "без username"
+        first_name = p["first_name"] or "Без імені"
+        text += f"⭐ {p['amount']} — {p['paid_at']}\n{first_name} ({username_text})\n\n"
+
+    await message.answer(text)
+
+@dp.message(Command("ban"))
+async def ban_cmd(message: types.Message, command: CommandObject):
+    if not is_owner(message.from_user.id):
+        return
+
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer("❌ Використання: `/ban 123 456 789` або `/ban 123,456,789`")
+        return
+
+    ids = re.split(r"[,\s]+", raw)
+
+    banned = []
+    skipped = []
+
+    for x in ids:
+        if not x.isdigit():
+            skipped.append(x)
+            continue
+
+        uid = int(x)
+
+        if is_owner(uid):
+            skipped.append(f"{uid}(owner)")
+            continue
+
+        ban_user(uid)
+        banned.append(uid)
+
+    text = ""
+
+    if banned:
+        text += "✅ Забанено:\n" + "\n".join([f"`{i}`" for i in banned]) + "\n\n"
+
+    if skipped:
+        text += "⚠️ Пропущено:\n" + "\n".join([f"`{i}`" for i in skipped])
+
+    await message.answer(text or "❌ Нічого не оброблено")
+
+@dp.message(Command("unban"))
+async def unban_cmd(message: types.Message, command: CommandObject):
+    if not is_owner(message.from_user.id):
+        return
+
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer("❌ Використання: `/unban 123 456 789` або `/unban 123,456,789`")
+        return
+
+    ids = re.split(r"[,\s]+", raw)
+
+    unbanned = []
+    not_found = []
+    skipped = []
+
+    for x in ids:
+        if not x.isdigit():
+            skipped.append(x)
+            continue
+
+        uid = int(x)
+        removed = unban_user(uid)
+
+        if removed:
+            unbanned.append(uid)
+        else:
+            not_found.append(uid)
+
+    text = ""
+
+    if unbanned:
+        text += "✅ Розбанено:\n" + "\n".join([f"`{i}`" for i in unbanned]) + "\n\n"
+
+    if not_found:
+        text += "❌ Не були в бані:\n" + "\n".join([f"`{i}`" for i in not_found]) + "\n\n"
+
+    if skipped:
+        text += "⚠️ Пропущено:\n" + "\n".join([f"`{i}`" for i in skipped])
+
+    await message.answer(text or "❌ Нічого не оброблено")
+
+@dp.message(Command("bans"))
+async def bans_cmd(message: types.Message):
+    if not is_owner(message.from_user.id):
+        return
+
+    rows = get_banned_users()
+
+    if not rows:
+        await message.answer("📂 Список банів порожній.")
+        return
+
+    text = "🚫 *Список банів:*\n\n"
+    for row in rows[:100]:
+        text += f"`{row['user_id']}` — {row['banned_at']}\n"
+
+    await message.answer(text)
+
+@dp.message(Command("broadcast"))
+async def broadcast(message: types.Message, command: CommandObject):
+    if not is_owner(message.from_user.id):
+        return
+
+    text = (command.args or "").strip()
+    if not text:
+        await message.answer("Напиши текст")
+        return
+
+    user_ids = get_all_user_ids()
+
+    ok = 0
+    bad = 0
+    bad_ids = []
+
+    for uid in user_ids:
+        try:
+            await bot.send_message(uid, text)
+            ok += 1
+        except Exception:
+            bad += 1
+            bad_ids.append(uid)
+
+    removed = clean_bad_users(bad_ids)
+
+    await message.answer(
+        f"Розсилка завершена\n\n"
+        f"OK: {ok}\n"
+        f"BAD: {bad}\n"
+        f"🧹 Видалено з бази: {removed}"
+    )
+
+@dp.message(F.forward_origin)
+async def block_forwarded(message: types.Message):
+    if check_ban(message.from_user.id):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
+    await message.answer("❌ Переслані повідомлення не підтримуються.")
+
+@dp.message(F.text | F.photo | F.voice | F.video_note | F.animation | F.sticker)
+async def anon(message: types.Message):
+    ensure_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+
+    uid = message.from_user.id
+
+    if check_ban(uid):
+        await message.answer("🚫 Вас заблоковано.")
+        return
+
     text_content = message.text or message.caption
+
+    if message.reply_to_message:
+        mid = message.reply_to_message.message_id
+        target = get_reply_target(mid)
+
+        if target is not None:
+            if is_russian(text_content):
+                await message.reply("Пишіть українською! 🇺🇦")
+                return
+
+            if check_ban(target):
+                await message.reply("❌ Одержувач заблокований.")
+                return
+
+            try:
+                sent = await bot.copy_message(
+                    chat_id=target,
+                    from_chat_id=message.chat.id,
+                    message_id=message.message_id
+                )
+                set_reply_target(sent.message_id, uid)
+                await message.reply("Відправлено")
+            except Exception:
+                await message.reply("❌ Помилка відправки")
+
+            return
 
     targets = get_user_mode(uid)
     if not targets:
@@ -304,23 +656,29 @@ async def anon(message: types.Message):
 
     for t in targets:
         try:
-            number = increment_received_count(int(t))
+            target_id = int(t)
+
+            if check_ban(target_id):
+                bad += 1
+                continue
+
+            number = increment_received_count(target_id)
             prefix = f"📩 Нова анонімка #{number}"
 
             if message.text:
                 sent = await bot.send_message(
-                    chat_id=int(t),
+                    chat_id=target_id,
                     text=f"{prefix}\n\n{message.text}"
                 )
                 set_reply_target(sent.message_id, uid)
             else:
                 header = await bot.send_message(
-                    chat_id=int(t),
+                    chat_id=target_id,
                     text=prefix
                 )
 
                 sent = await bot.copy_message(
-                    chat_id=int(t),
+                    chat_id=target_id,
                     from_chat_id=message.chat.id,
                     message_id=message.message_id
                 )
@@ -347,10 +705,12 @@ async def anon(message: types.Message):
             reply_markup=main_menu()
         )
 
-
-# ================== INLINE ==================
 @dp.inline_query()
 async def inline(query: types.InlineQuery):
+    if check_ban(query.from_user.id):
+        await query.answer([], cache_time=1)
+        return
+
     ensure_user(
         query.from_user.id,
         query.from_user.username,
@@ -370,13 +730,10 @@ async def inline(query: types.InlineQuery):
 
     await query.answer([item], cache_time=1)
 
-
-# ================== ГОЛОВНА ==================
 async def main():
     init_db()
     print("Bot started")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
